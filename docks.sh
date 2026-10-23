@@ -159,7 +159,7 @@ function build {
 		fi
 		[ ! -d "$build_dir" -a ! -z "$CREATE_DATADIR" ] && waiter mkdir -p $build_dir "Creating datadir for $1"
 
-		waiter docker build --network=host -t $provider/$NAME:$VERSION $($remove && echo "--no-cache") -f $containerdir/Dockerfile --rm --force-rm $(echo $OPTS) $build_dir "Building $1 image"
+		waiter docker build --network=host -t $provider/$NAME:$VERSION $($nocache && echo "--no-cache") -f $containerdir/Dockerfile --rm --force-rm $(echo $OPTS) $build_dir "Building $1 image"
 
 		if $slim && [ ! -z "$(which slim)" ]; then
 			waiter slim --report off build --target $provider/$NAME:$VERSION --tag $provider/$NAME:slim "Optimizing $1 image"
@@ -436,6 +436,7 @@ Options:
 
 \e[0;33mstart|stop|restart \e[3;34m<services> \e[0m: Manipulations around services
 \t\e[2;35m[--rm|-r]\t\e[0m: Erase the previously running container if so / rebuild the image
+\t\e[2;35m[--no-cache|-n]\t\e[0m: Build the image without using the layer cache
 \t\e[2;35m[--verbose|-v]\t\e[0m: Display the verbose output (behind the scenes)
 \t\e[2;35m[--force-pull|-f]\t\e[0m: Always pull the image tag before commands
 \t\e[2;35m[--dependency|-d]\t\e[0m: Check/Start dependents containers before
@@ -482,6 +483,7 @@ function main {
 [[ $@ == *'-c'* || $@ == *'--color'* ]] && export color=true || export color=false
 [[ $@ == *'-a'* || $@ == *'--always'* ]] && export always=true || export always=false
 [[ $@ == *'-s'* || $@ == *'--slim'* ]] && export slim=true || export slim=false
+[[ $@ == *'-n'* || $@ == *'--no-cache'* ]] && export nocache=true || export nocache=false
 
 export ret;
 
