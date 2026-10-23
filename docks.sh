@@ -118,13 +118,13 @@ function stop {
 	containerdir=${servicesdir}/${prefix}$1
 	[ -z "$1" ] && help && exit -1
 	if [ -d $containerdir ]; then
-		unset NAME STOP_PRE_CMD STOP_PRE_OUT_CMD STOP_POST_CMD STOP_POST_OUT_CMD
+		unset NAME STOP_PRE_CMD STOP_PRE_OUT_CMD STOP_POST_CMD STOP_POST_OUT_CMD STOP_TIMEOUT
 		cd $containerdir && source INFO && export $(cut -d= -f1 INFO | grep -v \#)
 		if [ -f $containerdir/Dockerfile* ]; then
 			if [ ! -z "$(docker ps -a --filter "name=${prefix}$NAME$" --filter status=running -q)" ]; then
 				[ ! -z "$STOP_PRE_CMD" ] && waiter docker exec ${NAME} $STOP_PRE_CMD "${prefixlog}Executing pre in task"
 				[ ! -z "$STOP_PRE_OUT_CMD" ] && waiter eval "$STOP_PRE_OUT_CMD" "${prefixlog}Executing pre out task"
-				waiter docker stop -t 4 ${prefix}$NAME "Stopping $1 container"
+				waiter docker stop -t ${STOP_TIMEOUT:-4} ${prefix}$NAME "Stopping $1 container"
 				$remove && waiter docker rm -f ${prefix}$NAME "Removing $1 container"
 			elif [ ! -z "$(docker ps -a --filter "name=${prefix}$NAME" -aq)" ] && $remove; then
 				$remove && waiter docker rm -f ${prefix}$NAME "Removing $1 container (dead)"
@@ -138,7 +138,7 @@ function stop {
 
 		[ ! -z "$STOP_POST_OUT_CMD" ] && waiter eval "$STOP_POST_OUT_CMD" "${prefixlog}Execing external post scripts"
 
-		unset NAME STOP_PRE_CMD STOP_PRE_OUT_CMD STOP_POST_OUT_CMD
+		unset NAME STOP_PRE_CMD STOP_PRE_OUT_CMD STOP_POST_OUT_CMD STOP_TIMEOUT
 		cd - >/dev/null
 	else
 		echo "<stop> $1 not found."
