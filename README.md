@@ -18,6 +18,7 @@ Options:
 
 start|stop|restart <services> : Manipulations around services
 	[--rm|-r]	: Erase the previously running container if so / rebuild the image
+	[--no-cache|-n]	: Build the image without using the layer cache
 	[--verbose|-v]	: Display the verbose output (behind the scenes)
 	[--force-pull|-f]	: Always pull the image tag before commands
 	[--dependency|-d]	: Check/Start dependents containers before
@@ -29,6 +30,7 @@ enter  <services>	: Enter interactivly inside container
 update 			: Update the containers resolve ip's
 list [-c]		: List the availables services
 log [--color|-c]	: Logging containers (need ccze)
+secret <service> [list|set|rm] <NAME>: Manage the service secrets (set reads stdin, needs root)
 self-update		: Check/Install latest version of Docks
 
 offered apps: *registered containers listed there*
@@ -101,6 +103,54 @@ containers folder
  
  - `Dockerfile`:
     contains the docker script to build
+
+### Secrets
+
+Secrets are kept out of `start.sh` and out of the container configuration, so `docker inspect` and the Docker API do not show them.
+
+| Item | Value |
+|---|---|
+| Enable | `SECRETS=true` in `INFO` (files owned by root), or `SECRETS="<uid>:<gid>"` when the container user is not root |
+| Storage | `<datadir>/<prefix><service>/secrets/<NAME>`, directory `0500`, files `0400` |
+| Mounts | `$SECRETS_OPTS`: the secrets directory at `/run/secrets` and the wrapper at `/run/docks/secrets-env`, both read-only |
+| Wrapper | `/run/docks/secrets-env <command>` exports each file as `NAME=<content>`, then runs the command |
+
+Commands (root only; `set` reads the value from stdin, or prompts without echo on a terminal):
+
+```bash
+docks secret <service>                 # list secret names
+docks secret <service> set <NAME>      # create or replace
+docks secret <service> rm <NAME>
+openssl rand -base64 32 | docks secret mysql set MYSQL_ROOT_PASSWORD
+```
+
+`start.sh`, for an image that reads `*_FILE` variables:
+
+```bash
+docker run \
+	-d \
+	$SECRETS_OPTS \
+	-e MYSQL_ROOT_PASSWORD_FILE=/run/secrets/MYSQL_ROOT_PASSWORD \
+	--name $NAME \
+	$IMAGE
+```
+
+`start.sh`, for any other image: put the wrapper in front of the image's original entrypoint and command (`docker image inspect -f '{{.Config.Entrypoint}} {{.Config.Cmd}}' <image>`):
+
+```bash
+docker run \
+	-d \
+	$SECRETS_OPTS \
+	--entrypoint /run/docks/secrets-env \
+	--name $NAME \
+	$IMAGE /entrypoint.sh serve
+```
+
+Notes:
+- The variables still exist in the environment of the container processes.
+- The wrapper uses shell built-ins only. For an image without a shell, add a static one in its `Dockerfile`: `COPY --from=busybox:1.37.0-musl /bin/busybox /bin/sh`.
+- The uid in `SECRETS` is also a host uid: a host user with the same uid can read the files.
+- Restart the service after `docks secret set` (`docks restart <service> -r`).
 
 
 

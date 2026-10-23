@@ -46,7 +46,7 @@ function start {
 
 	if [ -d $containerdir ]; then
 		cd $containerdir
-		unset PRE_CMD PRE_OUT_CMD POST_CMD POST_OUT_CMD LOGDIR DATADIR CREATE_DATADIR NAME IMAGE VERSION CONTAINER HOST DEPENDS
+		unset PRE_CMD PRE_OUT_CMD POST_CMD POST_OUT_CMD LOGDIR DATADIR CREATE_DATADIR NAME IMAGE VERSION CONTAINER HOST DEPENDS SECRETS SECRETS_OPTS
 		source INFO
 		export $(cut -d= -f1 INFO | grep -v \#)
 
@@ -67,6 +67,10 @@ function start {
 			fi
 			[ ! -d "$LOGDIR" ] && waiter mkdir -p $LOGDIR "${prefixlog}Creating logdir for $1"
 			[ ! -d "$DATADIR" -a ! "$CREATE_DATADIR" != "false" ] && waiter mkdir -p $DATADIR "${prefixlog}Creating datadir for $1"
+			if [ ! -z "$SECRETS" ]; then
+				secrets_prepare "$DATADIR/secrets" "$SECRETS" || { cd - >/dev/null; return 1; }
+				export SECRETS_OPTS="-v $DATADIR/secrets:/run/secrets:ro -v $datadir/.docks/secrets-env:/run/docks/secrets-env:ro"
+			fi
 			[ ! -z "$PRE_OUT_CMD" ] && waiter eval "$PRE_OUT_CMD" "${prefixlog}Executing pre out task"
 			[ ! -z "$PRE_CMD" ] && waiter docker exec ${NAME} $PRE_CMD "${prefixlog}Executing pre in task"
 
@@ -103,7 +107,7 @@ function start {
 		elif [ ! -z "$CONTAINER" ]; then
 			echo "<start> $1 already running."
 		fi
-		unset PRE_CMD PRE_OUT_CMD POST_CMD POST_OUT_CMD LOGDIR DATADIR CREATE_DATADIR NAME IMAGE VERSION CONTAINER HOST DEPENDS
+		unset PRE_CMD PRE_OUT_CMD POST_CMD POST_OUT_CMD LOGDIR DATADIR CREATE_DATADIR NAME IMAGE VERSION CONTAINER HOST DEPENDS SECRETS SECRETS_OPTS
 		cd - >/dev/null
 	else
 		echo "<start> $1 not found."
@@ -429,6 +433,83 @@ function waiter {
 	fi
 }
 
+function secrets_owner {
+	# SECRETS=true means root; otherwise SECRETS holds the uid:gid that reads the files in the container
+	[ "$1" == "true" ] && echo "0:0" || echo "$1"
+}
+
+function secrets_wrapper {
+	# Uses shell built-ins only, so a static busybox copied to /bin/sh is enough in images without a shell
+	cat <<-'WRAPPER'
+	#!/bin/sh
+	# Exports each file in /run/secrets as an environment variable named after the file, then runs the command.
+	for f in /run/secrets/*; do
+		[ -f "$f" ] || continue
+		name=${f##*/}
+		case $name in ''|[0-9]*|*[!A-Za-z0-9_]*) continue ;; esac
+		value=
+		while IFS= read -r line || [ -n "$line" ]; do value="${value:+$value
+	}$line"; done < "$f"
+		export "$name=$value"
+	done
+	exec "$@"
+	WRAPPER
+}
+
+function secrets_prepare {
+	# $1: secrets dir of the service, $2: SECRETS value from INFO
+	local dir=$1 owner=$(secrets_owner $2) wrapper=$datadir/.docks/secrets-env
+	if [ ! -d "$dir" ] || [ "$(cat "$wrapper" 2>/dev/null)" != "$(secrets_wrapper)" ]; then
+		if [ $EUID -ne 0 ]; then
+			echo "secrets: $dir is missing or $wrapper is outdated; run once as root"
+			return 1
+		fi
+		mkdir -p "$dir" "$datadir/.docks"
+		chown "$owner" "$dir"
+		chmod 500 "$dir"
+		secrets_wrapper > "$wrapper"
+		chmod 755 "$wrapper"
+	fi
+}
+
+function secret {
+	# docks secret <service> [list | set <NAME> | rm <NAME>]; set reads the value from stdin
+	local service=$1 action=${2:-list} name=$3
+	local containerdir=$servicesdir/${prefix}$service dir=$datadir/${prefix}$service/secrets
+	[ -z "$service" ] && help && return 1
+	[ ! -f "$containerdir/INFO" ] && echo "$service not found." && return 1
+	local value=$(unset SECRETS; source "$containerdir/INFO"; echo "$SECRETS")
+	[ -z "$value" ] && echo "$service: add SECRETS=true (or SECRETS=\"<uid>:<gid>\") to its INFO first" && return 1
+	[ $EUID -ne 0 ] && echo "secret: run as root" && return 1
+
+	case "$action" in
+		list)
+			[ -d "$dir" ] && ls -1 "$dir"
+			;;
+		set)
+			[[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "invalid secret name: $name"; return 1; }
+			secrets_prepare "$dir" "$value" || return 1
+			local content tmp
+			if [ -t 0 ]; then read -rsp "$name: " content; echo; else content=$(cat); fi
+			[ -z "$content" ] && echo "empty value, nothing written" && return 1
+			tmp=$(mktemp "$dir/.tmp.XXXXXX")
+			printf '%s' "$content" > "$tmp"
+			chown "$(secrets_owner $value)" "$tmp"
+			chmod 400 "$tmp"
+			mv "$tmp" "$dir/$name"
+			echo "$service: $name set, restart the service to apply"
+			;;
+		rm)
+			[[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "invalid secret name: $name"; return 1; }
+			rm -f "$dir/$name" && echo "$service: $name removed"
+			;;
+		*)
+			help
+			return 1
+			;;
+	esac
+}
+
 function help {
 	echo -e "usage: $script start|stop|restart|status|build|update|list|log|self-update <services> <opts> \n$script: manage the containers
 
@@ -448,6 +529,7 @@ Options:
 \e[0;33mupdate \e[0m\t\t\t: Update the containers resolve ip's
 \e[0;33mlist \e[2;35m[-c]\e[0m\t\t: List the availables services
 \e[0;33mlog \e[2;35m[--color|-c]\e[0m\t: Logging containers (need ccze)
+\e[0;33msecret \e[3;34m<service>\e[0m \e[2;35m[list|set|rm] <NAME>\e[0m: Manage the service secrets (set reads stdin, needs root)
 \e[0;33mself-update\e[0m\t\t: Check/Install latest version of Docks
 \noffered apps: $services"
 }
@@ -475,6 +557,9 @@ function main {
 
 #start
 [ -z "$1" ] && help && exit
+
+# secret takes positional arguments, so it bypasses the per-service loop and the option parsing below
+[ "$1" == "secret" ] && { secret "${@:2}"; exit $?; }
 
 [[ $@ == *'-v'* || $@ == *'--verbose'* ]] && export verbose=true || export verbose=false
 [[ $@ == *'-f'* || $@ == *'--force-pull'* ]] && export forcepull=true || export forcepull=false
