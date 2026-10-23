@@ -95,6 +95,7 @@ containers folder
 	IMAGE="nginx"           # image name to build
 	VERSION="0.1"           # image tag to build
 	DEPENDS="some_child"
+	STOP_TIMEOUT=30         # seconds docker waits before killing the container on stop (default 4)
 	
 	#backups
 	VOLUME_DIR="app"        # folder to backup 
